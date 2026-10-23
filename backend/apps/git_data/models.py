@@ -85,6 +85,7 @@ class User(models.Model):
             models.Index(fields=['status']),
             models.Index(fields=['account_type']),
             models.Index(fields=['processed_at']),
+            models.Index(fields=['scanned_at']),
         ]
 
     def __str__(self):

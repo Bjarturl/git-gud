@@ -3,7 +3,7 @@ from io import BytesIO
 from django.contrib import admin
 from django.contrib.admin import SimpleListFilter, helpers
 from django.db import connection
-from django.db.models import Count, Exists, IntegerField, OuterRef, Q, Subquery
+from django.db.models import Count, Exists, IntegerField, OuterRef, Prefetch, Q, Subquery
 from django.db.models.functions import Coalesce
 from django.contrib import messages
 from django.http import HttpResponse, HttpResponseRedirect, JsonResponse
@@ -175,9 +175,12 @@ class TagAdmin(admin.ModelAdmin):
     ordering = ["name"]
     actions = ["run_pipeline_action"]
 
-    @admin.display(description="Users")
+    def get_queryset(self, request):
+        return super().get_queryset(request).annotate(_user_count=Count("users"))
+
+    @admin.display(description="Users", ordering="_user_count")
     def user_count(self, obj):
-        return obj.users.count()
+        return obj._user_count
 
     @admin.action(description="Run pipeline for all confirmed users with selected tags")
     def run_pipeline_action(self, request, queryset):
@@ -377,7 +380,8 @@ class UserAdmin(admin.ModelAdmin):
                    TagFilter, ScannedFilter, HasMatchesFilter, RelatedToFilter]
     search_fields = ["username", "name", "email", "company", "bio", "location"]
     filter_horizontal = ("tags",)
-    actions = ["apply_tag_action", "tag_neighbours_action", "export_excel"]
+    actions = ["apply_tag_action", "export_excel"]
+    show_full_result_count = False
     inlines = [RepoInline, UserRelationshipFromInline,
                UserRelationshipToInline]
     fieldsets = [
@@ -408,81 +412,56 @@ class UserAdmin(admin.ModelAdmin):
     @admin.display(description="Actions")
     def status_actions(self, obj):
         eye_btn = format_html(
-            """
-            <a href="{}" target="_blank"
-            style="display:flex; align-items:center; justify-content:center;
-                    text-decoration:none;
-                    background:#0d6efd; color:white;
-                    width:28px; height:28px; border-radius:4px;">
-                👁
-            </a>
-            """,
+            '<a href="{}" target="_blank"'
+            ' style="display:flex;align-items:center;justify-content:center;'
+            'text-decoration:none;background:#0d6efd;color:white;'
+            'width:28px;height:28px;border-radius:4px;">👁</a>',
             obj.url or "#",
         )
         pipeline_btn = format_html(
-            """
-            <button type="button"
-                    onclick="runPipeline(this, {})"
-                    style="border:none; background:#17a2b8; color:white;
-                           width:28px; height:28px; border-radius:4px; cursor:pointer;">
-                ▶
-            </button>
-            """,
+            '<button type="button" onclick="runPipeline(this, {})"'
+            ' style="border:none;background:#17a2b8;color:white;'
+            'width:28px;height:28px;border-radius:4px;cursor:pointer;">▶</button>',
             obj.id,
+        )
+        related_btn = format_html(
+            '<a href="/admin/git_data/user/?related_to={}"'
+            ' style="display:flex;align-items:center;justify-content:center;'
+            'text-decoration:none;background:#6f42c1;color:white;'
+            'width:28px;height:28px;border-radius:4px;font-size:13px;">⇆</a>',
+            obj.username,
         )
         if obj.status == UserStatus.UNKNOWN:
             return format_html(
-                """
-                <div style="display: flex; gap: 6px;">
-                    <button type="button"
-                            class="status-btn confirm-btn"
-                            data-user-id="{0}"
-                            onclick="confirmUser(this, {0})"
-                            style="border:none; background:#28a745; color:white;
-                                width:28px; height:28px; border-radius:4px; cursor:pointer;">
-                        ✓
-                    </button>
-                    {1}
-                    <button type="button"
-                            class="status-btn hide-btn"
-                            data-user-id="{0}"
-                            onclick="hideUser(this, {0})"
-                            style="border:none; background:#dc3545; color:white;
-                                width:28px; height:28px; border-radius:4px; cursor:pointer;">
-                        ✕
-                    </button>
-                    {2}
-                </div>
-                """,
-                obj.id,
-                eye_btn,
-                pipeline_btn,
+                '<div style="display:flex;gap:6px;">'
+                '<button type="button" class="status-btn confirm-btn" data-user-id="{0}"'
+                ' onclick="confirmUser(this, {0})"'
+                ' style="border:none;background:#28a745;color:white;'
+                'width:28px;height:28px;border-radius:4px;cursor:pointer;">✓</button>'
+                '{1}'
+                '<button type="button" class="status-btn hide-btn" data-user-id="{0}"'
+                ' onclick="hideUser(this, {0})"'
+                ' style="border:none;background:#dc3545;color:white;'
+                'width:28px;height:28px;border-radius:4px;cursor:pointer;">✕</button>'
+                '{2}{3}'
+                '</div>',
+                obj.id, eye_btn, pipeline_btn, related_btn,
             )
         elif obj.status == UserStatus.HIDDEN:
             return format_html(
-                """
-                <div style="display: flex; gap: 6px;">
-                    <button type="button"
-                            class="status-btn confirm-btn"
-                            data-user-id="{0}"
-                            onclick="confirmUser(this, {0})"
-                            style="border:none; background:#28a745; color:white;
-                                width:28px; height:28px; border-radius:4px; cursor:pointer;">
-                        ✓
-                    </button>
-                    {1}
-                    {2}
-                </div>
-                """,
-                obj.id,
-                eye_btn,
-                pipeline_btn,
+                '<div style="display:flex;gap:6px;">'
+                '<button type="button" class="status-btn confirm-btn" data-user-id="{0}"'
+                ' onclick="confirmUser(this, {0})"'
+                ' style="border:none;background:#28a745;color:white;'
+                'width:28px;height:28px;border-radius:4px;cursor:pointer;">✓</button>'
+                '{1}{2}{3}'
+                '</div>',
+                obj.id, eye_btn, pipeline_btn, related_btn,
             )
         else:
             return format_html(
-                '<div style="display: flex; gap: 6px;">{}{}</div>',
-                eye_btn,
-                pipeline_btn,
+                '<div style="display:flex;gap:6px;">{}{}{}</div>',
+                eye_btn, pipeline_btn, related_btn,
             )
 
     @admin.display(description="Matches")
@@ -761,16 +740,21 @@ class UserAdmin(admin.ModelAdmin):
     def get_search_results(self, request, queryset, search_term):
         qs, use_distinct = super().get_search_results(request, queryset, search_term)
         if search_term:
-            repo_qs = queryset.filter(
-                Q(repos__name__icontains=search_term) | Q(repos__description__icontains=search_term),
-                repos__is_fork=False,
-            )
+            # Only search repo name (not description — TEXT icontains is a full table scan)
+            repo_qs = queryset.filter(repos__name__icontains=search_term, repos__is_fork=False)
             qs = (qs | repo_qs).distinct()
             use_distinct = True
         return qs, use_distinct
 
     def get_queryset(self, request):
-        qs = super().get_queryset(request)
+        qs = super().get_queryset(request).prefetch_related(
+            "tags",
+            Prefetch(
+                "repos",
+                queryset=Repo.objects.filter(is_fork=False).only("name").order_by("name"),
+                to_attr="_prefetched_repos",
+            ),
+        )
         if request.GET.get("has_matches") == "yes":
             commit_matches = Subquery(
                 Match.objects.filter(commit__author=OuterRef("pk"))
@@ -798,10 +782,10 @@ class UserAdmin(admin.ModelAdmin):
 
     @admin.display(description="Top Repos")
     def top_repos(self, obj):
-        names = list(
-            Repo.objects.filter(owner=obj, is_fork=False)
-            .values_list("name", flat=True)[:5]
-        )
+        repos = getattr(obj, "_prefetched_repos", None)
+        if repos is None:
+            repos = list(Repo.objects.filter(owner=obj, is_fork=False).only("name").order_by("name"))
+        names = [r.name for r in repos[:5]]
         return ", ".join(names) if names else "—"
 
     @admin.display(description="Tags")
@@ -815,24 +799,6 @@ class UserAdmin(admin.ModelAdmin):
         return HttpResponseRedirect(
             f"/admin/git_data/user/apply-tag/"
             f"?ids={','.join(selected)}&mode=selected"
-        )
-
-    @admin.action(description="Add tag to neighbours of selected users")
-    def tag_neighbours_action(self, request, queryset):
-        selected_ids = list(queryset.values_list("id", flat=True))
-        neighbour_ids = set(
-            UserRelationship.objects.filter(
-                Q(from_user_id__in=selected_ids) | Q(to_user_id__in=selected_ids)
-            ).values_list("from_user_id", flat=True)
-        ) | set(
-            UserRelationship.objects.filter(
-                Q(from_user_id__in=selected_ids) | Q(to_user_id__in=selected_ids)
-            ).values_list("to_user_id", flat=True)
-        )
-        neighbour_ids -= set(selected_ids)
-        return HttpResponseRedirect(
-            f"/admin/git_data/user/apply-tag/"
-            f"?ids={','.join(str(i) for i in neighbour_ids)}&mode=neighbours"
         )
 
     def apply_tag_view(self, request):
@@ -859,12 +825,17 @@ class UserAdmin(admin.ModelAdmin):
                 tag = None
 
             if tag:
-                for user in queryset:
-                    user.tags.add(tag)
-                messages.success(
-                    request,
-                    f"Added tag '{tag.name}' to {queryset.count()} user(s).",
+                ThroughModel = User.tags.through
+                user_ids = list(queryset.values_list("id", flat=True))
+                already = set(
+                    ThroughModel.objects.filter(tag=tag, user_id__in=user_ids)
+                    .values_list("user_id", flat=True)
                 )
+                ThroughModel.objects.bulk_create(
+                    [ThroughModel(user_id=uid, tag=tag) for uid in user_ids if uid not in already],
+                    ignore_conflicts=True,
+                )
+                messages.success(request, f"Added tag '{tag.name}' to {len(user_ids)} user(s).")
             return HttpResponseRedirect("/admin/git_data/user/")
 
         return render(request, "admin/git_data/apply_tag_action.html", {
