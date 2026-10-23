@@ -12,6 +12,7 @@ from apps.git_data.models import (
     DiscoveryMethod,
     UserStatus,
     RelationshipType,
+    Tag,
 )
 from apps.task_queue.tasks.utils.jobs import is_cancelled
 
@@ -76,7 +77,6 @@ def _build_user_fields(
     *,
     discovery_method: DiscoveryMethod,
     status: str,
-    tags: Optional[List[str]] = None,
 ) -> Dict:
     username = full_user_data["login"]
 
@@ -102,7 +102,6 @@ def _build_user_fields(
         "status": status,
         "source_created_at": parse_date(full_user_data.get("created_at")),
         "discovery_method": discovery_method,
-        "tags": tags or [],
     }
 
 
@@ -286,24 +285,30 @@ def create_or_update_discovered_user(
     if existing and not update_existing:
         return existing, False, Action.SKIPPED_EXISTING
 
-    tags = _build_search_tags(search_query, add_tags)
+    tag_names = _build_search_tags(search_query, add_tags)
     fields = _build_user_fields(
         full_user_data,
         discovery_method=DiscoveryMethod.SEARCH,
         status=set_user_status or UserStatus.CONFIRMED,
-        tags=tags,
     )
 
     if existing:
-        existing_tags = _merge_tags(existing.tags, fields.pop("tags"))
         for key, value in fields.items():
             setattr(existing, key, value)
-        existing.tags = existing_tags
         existing.save()
-        return existing, False, Action.UPDATED_EXISTING
+        user = existing
+        created = False
+        action = Action.UPDATED_EXISTING
+    else:
+        user = User.objects.create(**fields)
+        created = True
+        action = Action.CREATED_NEW
 
-    user = User.objects.create(**fields)
-    return user, True, Action.CREATED_NEW
+    if tag_names:
+        tags_objs = [Tag.objects.get_or_create(name=n)[0] for n in tag_names if n]
+        user.tags.add(*tags_objs)
+
+    return user, created, action
 
 
 def _process_user_relationships(
